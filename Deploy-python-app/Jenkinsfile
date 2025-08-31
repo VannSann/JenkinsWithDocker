@@ -1,0 +1,53 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKER_IMAGE = 'your-dockerhub-username/flask-jenkins-app'
+        IMAGE_TAG = "${env.BUILD_NUMBER}"
+        REMOTE_HOST = 'ec2-user@<your-ec2-public-ip>'
+    }
+
+    stages {
+        stage('Clone Code') {
+            steps {
+                git url: 'https://github.com/your-user/flask-jenkins-app.git', branch: 'main'
+            }
+        }
+
+        stage('Run Tests') {
+            steps {
+                sh 'pytest test_app.py'
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh 'docker build -t $DOCKER_IMAGE:$IMAGE_TAG .'
+            }
+        }
+
+        stage('Push to DockerHub') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                    sh '''
+                        echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+                        docker push $DOCKER_IMAGE:$IMAGE_TAG
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy to EC2') {
+            steps {
+                sh '''
+                    ssh -o StrictHostKeyChecking=no $REMOTE_HOST '
+                      docker pull $DOCKER_IMAGE:$IMAGE_TAG &&
+                      docker stop flaskapp || true &&
+                      docker rm flaskapp || true &&
+                      docker run -d --name flaskapp -p 80:5000 $DOCKER_IMAGE:$IMAGE_TAG
+                    '
+                '''
+            }
+        }
+    }
+}

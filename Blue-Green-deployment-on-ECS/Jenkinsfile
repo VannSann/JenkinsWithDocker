@@ -1,0 +1,108 @@
+//Changes in progress
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION = "us-east-1"
+        ECR_REPO = "474668404570.dkr.ecr.us-east-1.amazonaws.com/my-java-ecr"
+        IMAGE_TAG = "${BUILD_NUMBER}"
+        CLUSTER = "springboot-cluster"
+        SERVICE_BLUE = "springboot-blue"
+        SERVICE_GREEN = "springboot-green"
+        ALB_LISTENER_ARN = "arn:aws:elasticloadbalancing:...:listener/app/my-alb/..."
+        TG_ARN_BLUE = "arn:aws:elasticloadbalancing:...:targetgroup/blue-group/..."
+        TG_ARN_GREEN = "arn:aws:elasticloadbalancing:...:targetgroup/green-group/..."
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git 'https://github.com/your-org/your-app.git'
+            }
+        }
+
+        stage('Build & Push to ECR') {
+            steps {
+                sh '''
+                    aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REPO
+                    docker build -t $ECR_REPO:$IMAGE_TAG .
+                    docker push $ECR_REPO:$IMAGE_TAG
+                '''
+            }
+        }
+
+        stage('Register Task Definition') {
+            steps {
+                sh '''
+                    aws ecs register-task-definition \
+                      --cli-input-json file://task-def.json > task-output.json
+                '''
+            }
+        }
+
+        stage('Deploy to Green Service') {
+            steps {
+                sh '''
+                    aws ecs update-service \
+                      --cluster $CLUSTER \
+                      --service $SERVICE_GREEN \
+                      --force-new-deployment
+                '''
+            }
+        }
+
+        stage('Wait for Green Health') {
+            steps {
+                script {
+                    echo "Waiting for green service to become healthy..."
+                    def retries = 10
+                    def delay = 15
+                    def healthy = false
+
+                    for (int i = 0; i < retries; i++) {
+                        def status = sh(
+                            script: "aws elbv2 describe-target-health --target-group-arn $TG_ARN_GREEN --region $AWS_REGION | jq -r '.TargetHealthDescriptions[].TargetHealth.State'",
+                            returnStdout: true
+                        ).trim()
+
+                        if (status == "healthy") {
+                            healthy = true
+                            break
+                        } else {
+                            echo "Health check not passed yet: $status"
+                            sleep delay
+                        }
+                    }
+
+                    if (!healthy) {
+                        error("Green deployment failed health check. Triggering rollback.")
+                    }
+                }
+            }
+        }
+
+        stage('Switch ALB to Green') {
+            when {
+                expression { currentBuild.result == null } // only if previous stages succeeded
+            }
+            steps {
+                sh '''
+                    aws elbv2 modify-listener \
+                      --listener-arn $ALB_LISTENER_ARN \
+                      --default-actions Type=forward,TargetGroupArn=$TG_ARN_GREEN
+                '''
+            }
+        }
+    }
+
+    post {
+        failure {
+            echo "Rolling back to blue service"
+            sh '''
+                aws elbv2 modify-listener \
+                  --listener-arn $ALB_LISTENER_ARN \
+                  --default-actions Type=forward,TargetGroupArn=$TG_ARN_BLUE
+            '''
+        }
+    }
+}

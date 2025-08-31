@@ -1,0 +1,100 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION = 'us-east-1'
+        ECR_REPO = '474668404570.dkr.ecr.us-east-1.amazonaws.com/my-java-ecr'
+        IMAGE_TAG = "${env.BUILD_NUMBER}"
+        //AWS_CREDENTIALS_ID = 'aws-jenkins-creds'  // Jenkins credential (Access key + Secret)
+        CLUSTER_NAME = 'my-ecs-cluster'
+        SERVICE_NAME = 'my-ecs-service'
+        TASK_DEF_FAMILY = 'my-task-def'
+    }
+
+    stages {
+
+        stage('Clone Source') {
+            steps {
+                git credentialsId: 'github-token-creds',
+                    url: 'https://github.com/VannSann/ECR-AWScodepipeline.git',
+                    branch: 'main'
+            }
+        }
+
+        /*
+        stage('Checkout Code from GitHub') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'github-token-creds',
+                    usernameVariable: 'GIT_USER',
+                    passwordVariable: 'GIT_TOKEN'
+                )]) {
+                    sh '''
+                        git clone https://$GIT_USER:$GIT_TOKEN@github.com/VannSann/private-repo.git
+                        cd private-repo
+                    '''
+                }
+            }
+        }
+        */
+
+        stage('Build Maven Project') {
+            steps {
+                sh 'mvn clean package'
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                sh '''
+                    docker build -t $ECR_REPO:$IMAGE_TAG .
+                '''
+            }
+        }
+
+        stage('Login to ECR') {
+            steps {
+                //withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: "${AWS_CREDENTIALS_ID}"]]) {
+                    sh '''
+                        aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REPO
+                    '''
+                }
+            }
+        
+
+        stage('Push Image to ECR') {
+            steps {
+                sh '''
+                    docker push $ECR_REPO:$IMAGE_TAG
+                '''
+            }
+        }
+
+        stage('Deploy to ECS') {
+            when {
+                expression { return params.DEPLOY_TO_ECS == true }
+            }
+            steps {
+                //withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: "${AWS_CREDENTIALS_ID}"]]) {
+                    sh '''
+                        aws ecs update-service \
+                          --cluster $CLUSTER_NAME \
+                          --service $SERVICE_NAME \
+                          --force-new-deployment \
+                          --region $AWS_REGION
+                    '''
+                }
+            }
+        
+    }
+
+    parameters {
+        booleanParam(name: 'DEPLOY_TO_ECS', defaultValue: false, description: 'Deploy to ECS after pushing image?')
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}

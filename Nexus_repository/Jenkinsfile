@@ -1,0 +1,77 @@
+pipeline {
+    agent any
+
+    environment {
+        // Change Nexus URL, repo, and groupId/artifactId as per your pom.xml
+        NEXUS_URL = "http://nexus-server:8081"
+        NEXUS_REPO = "maven-releases"
+        GROUP_ID = "com.example"
+        ARTIFACT_ID = "myapp"
+        VERSION = "1.0.0"
+        PACKAGING = "jar"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                git branch: 'main', url: 'https://github.com/your-org/your-repo.git'
+            }
+        }
+
+        stage('Build with Maven') {
+            steps {
+                sh 'mvn clean package -DskipTests'
+            }
+        }
+
+        stage('Publish to Nexus') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'nexus-creds',
+                                                  usernameVariable: 'NEXUS_USER',
+                                                  passwordVariable: 'NEXUS_PASS')]) {
+                    sh """
+                        mvn deploy \
+                        -Dnexus.username=$NEXUS_USER \
+                        -Dnexus.password=$NEXUS_PASS
+                    """
+                }
+            }
+        }
+
+        stage('Download from Nexus') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'nexus-creds',
+                                                  usernameVariable: 'NEXUS_USER',
+                                                  passwordVariable: 'NEXUS_PASS')]) {
+                    sh """
+                        curl -u $NEXUS_USER:$NEXUS_PASS \
+                        -o ${ARTIFACT_ID}-${VERSION}.${PACKAGING} \
+                        ${NEXUS_URL}/repository/${NEXUS_REPO}/${GROUP_ID//./\/}/${ARTIFACT_ID}/${VERSION}/${ARTIFACT_ID}-${VERSION}.${PACKAGING}
+                    """
+                }
+            }
+        }
+
+        stage('Deploy to Tomcat') {
+            steps {
+                withCredentials([sshUserPrivateKey(credentialsId: 'ec2-ssh-key',
+                                                  keyFileVariable: 'SSH_KEY',
+                                                  usernameVariable: 'SSH_USER')]) {
+                    sh """
+                        scp -i $SSH_KEY ${ARTIFACT_ID}-${VERSION}.${PACKAGING} $SSH_USER@ec2-server:/opt/tomcat/webapps/
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "✅ Build, Nexus Upload, and Deployment Successful!"
+        }
+        failure {
+            echo "❌ Build failed!"
+        }
+    }
+}
