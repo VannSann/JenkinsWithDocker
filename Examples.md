@@ -1,6 +1,7 @@
 ---
 
-### ✅ 1. **Multibranch Pipeline with GitHub PR Builds**
+
+### ✅ 1.**Multibranch Pipeline with GitHub PR Builds**
 
 * Automatically create jobs for each branch
 * Build/test Pull Requests before merging
