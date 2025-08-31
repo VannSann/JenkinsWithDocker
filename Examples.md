@@ -1,6 +1,6 @@
 ---
 
-## 🆕 Advanced Jenkins projects examples 
+Advanced Jenkins projects examples 
 
 ### ✅ 1. **Multibranch Pipeline with GitHub PR Builds**
 
